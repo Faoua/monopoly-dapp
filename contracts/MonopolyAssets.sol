@@ -1,0 +1,231 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+
+contract MonopolyAssets is ERC1155, Ownable {
+    enum AssetType { PROPERTY, STATION, UTILITY, HOUSE, HOTEL }
+
+    // Cooldown global (5 minutes)
+    uint256 public constant COOLDOWN_SECONDS = 5 minutes;
+    mapping(address => uint256) public lastActionAt;
+
+    // Lock après acquisition (10 minutes)
+    uint256 public constant LOCK_SECONDS = 10 minutes;
+    mapping(address => mapping(uint256 => uint256)) public lockedUntil;
+
+    // Max 4 ressources uniques (tokenIds différents)
+    uint256 public constant MAX_UNIQUE_RESOURCES = 4;
+    mapping(address => uint256) public uniqueOwnedCount;
+    mapping(address => mapping(uint256 => bool)) private _ownsId;
+
+    struct AssetInfo {
+        string name;
+        AssetType assetType;
+        uint256 value;
+        string ipfsHash;
+        uint256 createdAt;
+        uint256 lastTransferAt;
+    }
+
+    uint256 private nextTokenId = 1;
+    mapping(uint256 => AssetInfo) private assets;
+
+    // Historique des anciens propriétaires (par tokenId)
+    mapping(uint256 => address[]) private _previousOwners;
+
+    event AssetCreated(uint256 indexed tokenId, string name, AssetType assetType, uint256 value, string ipfsHash);
+    event AssetMinted(address indexed to, uint256 indexed tokenId, uint256 amount);
+
+    event TradeExecuted(
+        address indexed maker,
+        address indexed counterparty,
+        uint256 idGive,
+        uint256 amountGive,
+        uint256 idWant,
+        uint256 amountWant
+    );
+
+    constructor() ERC1155("") Ownable(msg.sender) {}
+
+    function createAsset(
+        string calldata name,
+        AssetType assetType,
+        uint256 value,
+        string calldata ipfsHash
+    ) external onlyOwner returns (uint256 tokenId) {
+        require(bytes(name).length > 0, "Name required");
+        require(value > 0, "Value must be > 0");
+
+        tokenId = nextTokenId++;
+        assets[tokenId] = AssetInfo({
+            name: name,
+            assetType: assetType,
+            value: value,
+            ipfsHash: ipfsHash,
+            createdAt: block.timestamp,
+            lastTransferAt: 0
+        });
+
+        emit AssetCreated(tokenId, name, assetType, value, ipfsHash);
+    }
+
+    function mintTo(address to, uint256 tokenId, uint256 amount) external onlyOwner {
+        require(to != address(0), "Zero address");
+        require(assets[tokenId].createdAt != 0, "Asset not found");
+        require(amount > 0, "Amount must be > 0");
+
+        _mint(to, tokenId, amount, "");
+        emit AssetMinted(to, tokenId, amount);
+    }
+
+    function getAsset(uint256 tokenId) external view returns (AssetInfo memory) {
+        require(assets[tokenId].createdAt != 0, "Asset not found");
+        return assets[tokenId];
+    }
+
+    function getPreviousOwners(uint256 tokenId) external view returns (address[] memory) {
+        require(assets[tokenId].createdAt != 0, "Asset not found");
+        return _previousOwners[tokenId];
+    }
+
+    // ---- TRADE (Option A: valeur totale égale) ----
+function trade(
+    address counterparty,
+    uint256 idGive,
+    uint256 amountGive,
+    uint256 idWant,
+    uint256 amountWant
+) external {
+    require(counterparty != address(0), "Zero counterparty");
+    require(counterparty != msg.sender, "Same address");
+    require(amountGive > 0 && amountWant > 0, "Amount must be > 0");
+
+    require(assets[idGive].createdAt != 0, "Give asset not found");
+    require(assets[idWant].createdAt != 0, "Want asset not found");
+
+    require(balanceOf(msg.sender, idGive) >= amountGive, "Insufficient give balance");
+    require(balanceOf(counterparty, idWant) >= amountWant, "Counterparty insufficient balance");
+
+    require(isApprovedForAll(msg.sender, address(this)), "Maker not approved");
+    require(isApprovedForAll(counterparty, address(this)), "Counterparty not approved");
+
+    uint256 giveTotal = assets[idGive].value * amountGive;
+    uint256 wantTotal = assets[idWant].value * amountWant;
+    require(giveTotal == wantTotal, "Trade not fair");
+
+    // IMPORTANT: utiliser _safeTransferFrom (internal) pour éviter la contrainte msg.sender d'ERC1155
+    _safeTransferFrom(msg.sender, counterparty, idGive, amountGive, "");
+    _safeTransferFrom(counterparty, msg.sender, idWant, amountWant, "");
+
+    emit TradeExecuted(msg.sender, counterparty, idGive, amountGive, idWant, amountWant);
+}
+
+    // ---------------- Internals ----------------
+
+    function _checkCooldown(address user) internal view {
+        if (user == address(0)) return;
+        require(block.timestamp >= lastActionAt[user] + COOLDOWN_SECONDS, "Cooldown not passed");
+    }
+
+    function _checkLock(address from, uint256 id) internal view {
+        if (from == address(0)) return;
+        require(block.timestamp >= lockedUntil[from][id], "Token is locked");
+    }
+
+    function _afterBalanceChange(address user, uint256 id) internal {
+        if (user == address(0)) return;
+
+        uint256 bal = balanceOf(user, id);
+        bool owns = _ownsId[user][id];
+
+        // Acquisition d'un nouveau tokenId (0 -> >0)
+        if (!owns && bal > 0) {
+            require(uniqueOwnedCount[user] + 1 <= MAX_UNIQUE_RESOURCES, "Max resources reached");
+            _ownsId[user][id] = true;
+            uniqueOwnedCount[user] += 1;
+        }
+
+        // Perte d'un tokenId (>0 -> 0)
+        if (owns && bal == 0) {
+            _ownsId[user][id] = false;
+            uniqueOwnedCount[user] -= 1;
+        }
+    }
+
+    function _recordPreviousOwner(uint256 id, address from) internal {
+        if (from == address(0)) return;
+        if (assets[id].createdAt == 0) return;
+
+        address[] storage arr = _previousOwners[id];
+
+        // Anti doublon simple: évite deux fois de suite la même adresse
+        if (arr.length == 0 || arr[arr.length - 1] != from) {
+            arr.push(from);
+        }
+    }
+
+    // Hook ERC1155: appelé sur mint / transfer / burn
+    function _update(
+        address from,
+        address to,
+        uint256[] memory ids,
+        uint256[] memory values
+    ) internal override {
+        // Cooldown :
+        // - mint => check receiver
+        // - transfer => check sender
+        if (from == address(0)) {
+            _checkCooldown(to);
+        } else {
+            _checkCooldown(from);
+        }
+
+        // Lock :
+        // - uniquement sur transfer (pas mint)
+        if (from != address(0)) {
+            for (uint256 i = 0; i < ids.length; i++) {
+                _checkLock(from, ids[i]);
+            }
+        }
+
+        super._update(from, to, ids, values);
+
+        // lastTransferAt sur mint ou transfer (ignore burn)
+        if (to != address(0)) {
+            for (uint256 i = 0; i < ids.length; i++) {
+                if (assets[ids[i]].createdAt != 0) {
+                    assets[ids[i]].lastTransferAt = block.timestamp;
+                }
+            }
+        }
+
+        // Enregistrer l'action (même logique que le cooldown)
+        if (from == address(0)) {
+            lastActionAt[to] = block.timestamp;
+        } else {
+            lastActionAt[from] = block.timestamp;
+        }
+
+        // Appliquer un lock au receveur après acquisition (mint ou réception de transfert)
+        if (to != address(0)) {
+            for (uint256 i = 0; i < ids.length; i++) {
+                lockedUntil[to][ids[i]] = block.timestamp + LOCK_SECONDS;
+            }
+        }
+
+        // previousOwners : uniquement sur vrai transfert (from et to non-zero)
+        if (from != address(0) && to != address(0)) {
+            for (uint256 i = 0; i < ids.length; i++) {
+                _recordPreviousOwner(ids[i], from);
+            }
+        }
+
+        // Limite max 4 ressources uniques (après MAJ des balances)
+        for (uint256 i = 0; i < ids.length; i++) {
+            _afterBalanceChange(from, ids[i]);
+            _afterBalanceChange(to, ids[i]);
+        }
+    }
+}
