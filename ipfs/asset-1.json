@@ -1,0 +1,10 @@
+{
+  "name": "Gare du Nord",
+  "type": "STATION",
+  "value": 200,
+  "description": "Gare stratégique du plateau Monopoly",
+  "image": "ipfs://CID_IMAGE_A_REMPLACER",
+  "createdAt": "2026-01-22",
+  "lastTransferAt": null,
+  "previousOwners": []
+}
