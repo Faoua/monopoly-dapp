@@ -56,9 +56,52 @@ Les métadonnées des assets (nom, description, image, valeur) sont stockées of
 
 Le smart contract stocke uniquement le hash IPFS (CID) via le champ `ipfsHash` afin de garantir l'intégrité et la traçabilité des ressources.
 
-
 ### Exemple IPFS
 
 Les fichiers de métadonnées sont uploadés via Pinata.
 Chaque asset référence un CID IPFS utilisé lors de la création
 du token dans le smart contract.
+
+
+## Intégration d’IPFS
+
+### Pourquoi IPFS
+
+Le stockage de métadonnées riches directement sur la blockchain est coûteux en gaz.
+
+IPFS est utilisé afin de stocker les métadonnées des ressources en dehors de la blockchain,
+
+tout en garantissant l’intégrité des données grâce à l’adressage par le contenu.
+
+### Données stockées sur IPFS
+
+Chaque ressource est associée à un fichier de métadonnées au format JSON stocké sur IPFS,
+
+contenant notamment :
+
+* le nom de la ressource
+* le type de ressource
+* la valeur associée
+* une description
+* une image
+* les timestamps (création et dernier transfert)
+* l’historique des anciens propriétaires
+
+### Lien avec la blockchain
+
+Le smart contract stocke uniquement le CID (hash IPFS) via le champ `ipfsHash`
+
+de la structure `AssetInfo`.
+
+Ce CID permet à n’importe quel client ou front-end de récupérer les métadonnées
+
+associées à une ressource via l’URL :
+
+**ipfs://bafkreidkkcqmcihgfdbmmj5fchomwwhpi6lnlcfip5gukyrcs2gois47qa**
+
+### Avantages
+
+* Réduction des coûts en gaz
+* Métadonnées immuables
+* Stockage décentralisé
+* Séparation claire entre la logique on-chain et les données off-chain
