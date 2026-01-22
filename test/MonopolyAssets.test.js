@@ -325,3 +325,18 @@ describe("MonopolyAssets", function () {
     ).to.be.revertedWith("Counterparty not approved");
   });
 });
+
+it("stores and retrieves IPFS hash correctly", async function () {
+  const [owner] = await ethers.getSigners();
+
+  const Factory = await ethers.getContractFactory("MonopolyAssets");
+  const assets = await Factory.deploy();
+
+  const cid = "QmTESTCIDIPFS123456";
+
+  await assets.createAsset("IPFS Test Asset", 0, 150, cid);
+
+  const asset = await assets.getAsset(1);
+
+  expect(asset.ipfsHash).to.equal(cid);
+});
