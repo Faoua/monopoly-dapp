@@ -10,6 +10,9 @@ function App() {
   const [contract, setContract] = useState(null);
   const [assets, setAssets] = useState([]);
 
+  // ==========================
+  // CONNECT WALLET
+  // ==========================
   const connectWallet = async () => {
     if (!window.ethereum) {
       alert("Installe Metamask !");
@@ -23,14 +26,13 @@ function App() {
       method: "eth_requestAccounts",
     });
 
-    setAccount(accounts[0]);
-
     const monopolyContract = new ethers.Contract(
       CONTRACT_ADDRESS,
       MonopolyABI.abi,
       signer
     );
 
+    setAccount(accounts[0]);
     setContract(monopolyContract);
 
     console.log("Contrat chargé :", monopolyContract);
@@ -38,14 +40,18 @@ function App() {
     console.log("Adresse contrat frontend :", monopolyContract.target);
   };
 
+  // ==========================
+  // LOAD ASSETS
+  // ==========================
   const loadAssets = async () => {
-    if (!contract) return;
+    if (!contract || !account) return;
 
     const loadedAssets = [];
 
     for (let id = 1; id <= 5; id++) {
       try {
         const asset = await contract.getAsset(id);
+        const balance = await contract.balanceOf(account, id);
 
         console.log("Asset", id, asset);
 
@@ -57,10 +63,14 @@ function App() {
           const response = await fetch(ipfsUrl);
           if (response.ok) {
             metadata = await response.json();
+          } else {
+            console.log("IPFS primary failed", id);
           }
         } catch (e) {
-          console.log("IPFS failed for", id);
+          console.log("IPFS fetch crash", id);
         }
+
+        console.log("Metadata asset", id, metadata);
 
         loadedAssets.push({
           id,
@@ -68,6 +78,7 @@ function App() {
           value: asset.value.toString(),
           type: asset.assetType,
           ipfs: asset.ipfsHash,
+          owned: balance.toString(),
           metadata,
         });
       } catch (err) {
@@ -78,6 +89,10 @@ function App() {
     console.log("LOADED ASSETS:", loadedAssets);
     setAssets(loadedAssets);
   };
+
+  // ==========================
+  // UI
+  // ==========================
   return (
     <div className="App">
       <h1>🎲 Monopoly DApp</h1>
@@ -92,23 +107,35 @@ function App() {
       )}
 
       <div className="assets">
+        {assets.length === 0 && account && <p>Aucun asset trouvé.</p>}
+
         {assets.map((asset) => (
           <div key={asset.id} className="asset-card">
             <h3>{asset.name}</h3>
+
             <p>ID: {asset.id}</p>
             <p>Valeur: {asset.value}</p>
+            <p>Possédé: {asset.owned}</p>
             <p>Type: {asset.type}</p>
             <p>CID: {asset.ipfs}</p>
 
             {asset.metadata?.image && (
               <img
-                src={`https://ipfs.io/ipfs/${asset.metadata.image}`}
+                src={
+                  asset.metadata.image.startsWith("http")
+                    ? asset.metadata.image
+                    : `https://gateway.pinata.cloud/ipfs/${asset.metadata.image}`
+                }
                 alt={asset.name}
-                width="200"
+                width="220"
+                onError={(e) => {
+                  e.target.onerror = null;
+                  e.target.src = `https://cloudflare-ipfs.com/ipfs/${asset.metadata.image}`;
+                }}
               />
             )}
 
-            <p>{asset.metadata?.description}</p>
+            {asset.metadata?.description && <p>{asset.metadata.description}</p>}
           </div>
         ))}
       </div>
