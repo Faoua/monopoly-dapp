@@ -1,0 +1,10 @@
+{
+  "name": "Gare de Lyon",
+  "type": "STATION",
+  "value": 200,
+  "description": "Deuxième gare du plateau",
+  "image": "ipfs://bafkreiflbn2hqi4ckppqt7lep5btispnjpba7xesg5ki3dzvwrmquwgmjm",
+  "createdAt": "2026-01-30",
+  "lastTransferAt": null,
+  "previousOwners": []
+}
