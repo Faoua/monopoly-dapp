@@ -105,3 +105,29 @@ associées à une ressource via l’URL :
 * Métadonnées immuables
 * Stockage décentralisé
 * Séparation claire entre la logique on-chain et les données off-chain
+
+## Front-end et intégration Web3
+
+Cette partie concerne le développement du front-end de la DApp ainsi que l’intégration avec la blockchain.
+
+Le front-end est développé en React et utilise la bibliothèque ethers.js pour communiquer avec le smart contract déployé sur le réseau Hardhat local.
+
+Cette partie couvre :
+
+la connexion au wallet MetaMask
+
+la récupération de l’adresse de l’utilisateur
+
+la connexion au smart contract via son ABI et son adresse
+
+les appels aux fonctions du contrat (getAsset, balanceOf, getPreviousOwners)
+
+la récupération des métadonnées depuis IPFS
+
+l’affichage des propriétés du jeu (nom, valeur, type, CID, image, description)
+
+la gestion des erreurs lorsque certains tokens n’existent pas
+
+l’ajout d’un affichage simple côté interface (cartes, grille, messages de chargement)
+
+Le front-end permet ainsi de visualiser les ressources du jeu créées on-chain et leurs données stockées off-chain sur IPFS, tout en interagissant avec le wallet de l’utilisateur.

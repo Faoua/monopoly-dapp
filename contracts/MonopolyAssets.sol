@@ -3,8 +3,9 @@ pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract MonopolyAssets is ERC1155, Ownable {
+contract MonopolyAssets is ERC1155, Ownable, ReentrancyGuard {
     enum AssetType { PROPERTY, STATION, UTILITY, HOUSE, HOTEL }
 
     // Cooldown global (5 minutes)
@@ -23,8 +24,8 @@ contract MonopolyAssets is ERC1155, Ownable {
     struct AssetInfo {
         string name;
         AssetType assetType;
-        uint256 value;
-        string ipfsHash;
+        uint256 value;          // prix/valeur (en wei dans buyAsset)
+        string ipfsHash;        // ipfs://CID du JSON metadata
         uint256 createdAt;
         uint256 lastTransferAt;
     }
@@ -47,7 +48,16 @@ contract MonopolyAssets is ERC1155, Ownable {
         uint256 amountWant
     );
 
+    event AssetBought(
+        address indexed buyer,
+        uint256 indexed tokenId,
+        uint256 amount,
+        uint256 paid
+    );
+
     constructor() ERC1155("") Ownable(msg.sender) {}
+
+    // ---------------- Admin / création ----------------
 
     function createAsset(
         string calldata name,
@@ -57,6 +67,7 @@ contract MonopolyAssets is ERC1155, Ownable {
     ) external onlyOwner returns (uint256 tokenId) {
         require(bytes(name).length > 0, "Name required");
         require(value > 0, "Value must be > 0");
+        require(bytes(ipfsHash).length > 0, "IPFS required");
 
         tokenId = nextTokenId++;
         assets[tokenId] = AssetInfo({
@@ -80,6 +91,13 @@ contract MonopolyAssets is ERC1155, Ownable {
         emit AssetMinted(to, tokenId, amount);
     }
 
+    // ✅ pour le front : IDs existants = 1..(getNextTokenId()-1)
+    function getNextTokenId() external view returns (uint256) {
+        return nextTokenId;
+    }
+
+    // ---------------- Lecture ----------------
+
     function getAsset(uint256 tokenId) external view returns (AssetInfo memory) {
         require(assets[tokenId].createdAt != 0, "Asset not found");
         return assets[tokenId];
@@ -90,37 +108,52 @@ contract MonopolyAssets is ERC1155, Ownable {
         return _previousOwners[tokenId];
     }
 
-    // ---- TRADE (Option A: valeur totale égale) ----
-function trade(
-    address counterparty,
-    uint256 idGive,
-    uint256 amountGive,
-    uint256 idWant,
-    uint256 amountWant
-) external {
-    require(counterparty != address(0), "Zero counterparty");
-    require(counterparty != msg.sender, "Same address");
-    require(amountGive > 0 && amountWant > 0, "Amount must be > 0");
+    // ---------------- Achat (Option B) ----------------
+    // L'utilisateur paye msg.value == value, et reçoit 1 token.
+    function buyAsset(uint256 tokenId) external payable nonReentrant {
+        require(assets[tokenId].createdAt != 0, "Asset not found");
+        require(msg.value == assets[tokenId].value, "Incorrect payment");
 
-    require(assets[idGive].createdAt != 0, "Give asset not found");
-    require(assets[idWant].createdAt != 0, "Want asset not found");
+        // mint vers l'acheteur (déclenche cooldown + lock via _update hook)
+        _mint(msg.sender, tokenId, 1, "");
 
-    require(balanceOf(msg.sender, idGive) >= amountGive, "Insufficient give balance");
-    require(balanceOf(counterparty, idWant) >= amountWant, "Counterparty insufficient balance");
+        // transfert des fonds au owner
+        (bool ok, ) = owner().call{value: msg.value}("");
+        require(ok, "Payment transfer failed");
 
-    require(isApprovedForAll(msg.sender, address(this)), "Maker not approved");
-    require(isApprovedForAll(counterparty, address(this)), "Counterparty not approved");
+        emit AssetBought(msg.sender, tokenId, 1, msg.value);
+    }
 
-    uint256 giveTotal = assets[idGive].value * amountGive;
-    uint256 wantTotal = assets[idWant].value * amountWant;
-    require(giveTotal == wantTotal, "Trade not fair");
+    // ---- TRADE (valeur totale égale) ----
+    function trade(
+        address counterparty,
+        uint256 idGive,
+        uint256 amountGive,
+        uint256 idWant,
+        uint256 amountWant
+    ) external {
+        require(counterparty != address(0), "Zero counterparty");
+        require(counterparty != msg.sender, "Same address");
+        require(amountGive > 0 && amountWant > 0, "Amount must be > 0");
 
-    // IMPORTANT: utiliser _safeTransferFrom (internal) pour éviter la contrainte msg.sender d'ERC1155
-    _safeTransferFrom(msg.sender, counterparty, idGive, amountGive, "");
-    _safeTransferFrom(counterparty, msg.sender, idWant, amountWant, "");
+        require(assets[idGive].createdAt != 0, "Give asset not found");
+        require(assets[idWant].createdAt != 0, "Want asset not found");
 
-    emit TradeExecuted(msg.sender, counterparty, idGive, amountGive, idWant, amountWant);
-}
+        require(balanceOf(msg.sender, idGive) >= amountGive, "Insufficient give balance");
+        require(balanceOf(counterparty, idWant) >= amountWant, "Counterparty insufficient balance");
+
+        require(isApprovedForAll(msg.sender, address(this)), "Maker not approved");
+        require(isApprovedForAll(counterparty, address(this)), "Counterparty not approved");
+
+        uint256 giveTotal = assets[idGive].value * amountGive;
+        uint256 wantTotal = assets[idWant].value * amountWant;
+        require(giveTotal == wantTotal, "Trade not fair");
+
+        _safeTransferFrom(msg.sender, counterparty, idGive, amountGive, "");
+        _safeTransferFrom(counterparty, msg.sender, idWant, amountWant, "");
+
+        emit TradeExecuted(msg.sender, counterparty, idGive, amountGive, idWant, amountWant);
+    }
 
     // ---------------- Internals ----------------
 
@@ -140,14 +173,12 @@ function trade(
         uint256 bal = balanceOf(user, id);
         bool owns = _ownsId[user][id];
 
-        // Acquisition d'un nouveau tokenId (0 -> >0)
         if (!owns && bal > 0) {
             require(uniqueOwnedCount[user] + 1 <= MAX_UNIQUE_RESOURCES, "Max resources reached");
             _ownsId[user][id] = true;
             uniqueOwnedCount[user] += 1;
         }
 
-        // Perte d'un tokenId (>0 -> 0)
         if (owns && bal == 0) {
             _ownsId[user][id] = false;
             uniqueOwnedCount[user] -= 1;
@@ -159,31 +190,26 @@ function trade(
         if (assets[id].createdAt == 0) return;
 
         address[] storage arr = _previousOwners[id];
-
-        // Anti doublon simple: évite deux fois de suite la même adresse
         if (arr.length == 0 || arr[arr.length - 1] != from) {
             arr.push(from);
         }
     }
 
-    // Hook ERC1155: appelé sur mint / transfer / burn
+    // Hook ERC1155 : mint/transfer/burn
     function _update(
         address from,
         address to,
         uint256[] memory ids,
         uint256[] memory values
     ) internal override {
-        // Cooldown :
-        // - mint => check receiver
-        // - transfer => check sender
+        // Cooldown : mint => receiver, transfer => sender
         if (from == address(0)) {
             _checkCooldown(to);
         } else {
             _checkCooldown(from);
         }
 
-        // Lock :
-        // - uniquement sur transfer (pas mint)
+        // Lock : uniquement sur transfer (pas mint)
         if (from != address(0)) {
             for (uint256 i = 0; i < ids.length; i++) {
                 _checkLock(from, ids[i]);
@@ -201,28 +227,28 @@ function trade(
             }
         }
 
-        // Enregistrer l'action (même logique que le cooldown)
+        // Enregistrer l'action
         if (from == address(0)) {
             lastActionAt[to] = block.timestamp;
         } else {
             lastActionAt[from] = block.timestamp;
         }
 
-        // Appliquer un lock au receveur après acquisition (mint ou réception de transfert)
+        // Lock au receveur après acquisition (mint ou réception transfert)
         if (to != address(0)) {
             for (uint256 i = 0; i < ids.length; i++) {
                 lockedUntil[to][ids[i]] = block.timestamp + LOCK_SECONDS;
             }
         }
 
-        // previousOwners : uniquement sur vrai transfert (from et to non-zero)
+        // previousOwners : seulement sur transfert (from et to non-zero)
         if (from != address(0) && to != address(0)) {
             for (uint256 i = 0; i < ids.length; i++) {
                 _recordPreviousOwner(ids[i], from);
             }
         }
 
-        // Limite max 4 ressources uniques (après MAJ des balances)
+        // Limite max 4 ressources uniques
         for (uint256 i = 0; i < ids.length; i++) {
             _afterBalanceChange(from, ids[i]);
             _afterBalanceChange(to, ids[i]);
